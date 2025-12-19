@@ -3,6 +3,16 @@ name: k6 Load Test
 on:
   workflow_dispatch:      # run manually from GitHub UI
     inputs:
+      max_users:
+        description: 'Maximum number of virtual users (VUs) to simulate'
+        required: false
+        default: '500'
+        type: choice
+        options:
+          - '100'
+          - '250'
+          - '500'
+          - '1000'
       parallel_instances:
         description: 'Number of parallel instances to run'
         required: false
@@ -39,34 +49,72 @@ jobs:
             exit 1
           fi
           echo "✓ k6 script found: automationexecise-loadtest.js"
+          echo "Script size: $(wc -c < automationexecise-loadtest.js) bytes"
+          echo "First 20 lines:"
+          head -20 automationexecise-loadtest.js
+
+      - name: Validate k6 script syntax
+        run: |
+          echo "Validating k6 script syntax..."
+          k6 inspect automationexecise-loadtest.js || {
+            echo "ERROR: k6 script validation failed!"
+            echo "This usually indicates a syntax error in the script"
+            exit 1
+          }
+          echo "✓ k6 script syntax is valid"
 
       - name: Run k6 load test (Instance ${{ matrix.instance }})
         continue-on-error: true
         id: k6_test
+        env:
+          MAX_USERS: ${{ github.event.inputs.max_users || '500' }}
         run: |
           mkdir -p reports/instance-${{ matrix.instance }}
-          # Calculate execution segment for this instance (4 instances total)
           TOTAL_INSTANCES=4
           CURRENT_INSTANCE=${{ matrix.instance }}
-          SEGMENT_START=$(( (CURRENT_INSTANCE - 1) * 100 / TOTAL_INSTANCES ))
-          SEGMENT_END=$(( CURRENT_INSTANCE * 100 / TOTAL_INSTANCES ))
           
           echo "Running instance $CURRENT_INSTANCE of $TOTAL_INSTANCES"
-          echo "Execution segment: $SEGMENT_START%-$SEGMENT_END%"
+          echo "Maximum users (VUs) per instance: $MAX_USERS"
+          echo "Each instance runs independently to generate parallel load"
           
+          # Run k6 without execution segments (simpler and more reliable)
+          # Each instance runs the full test independently, creating parallel load
+          # The results will be aggregated later
+          echo "Starting k6 test with MAX_USERS=$MAX_USERS..."
           k6 run automationexecise-loadtest.js \
-            --execution-segment "$SEGMENT_START%-$SEGMENT_END%" \
-            --execution-segment-sequence "$CURRENT_INSTANCE/$TOTAL_INSTANCES" \
             --out json=reports/instance-${{ matrix.instance }}/k6-result.json \
-            --summary-export=reports/instance-${{ matrix.instance }}/summary.json || {
+            --summary-export=reports/instance-${{ matrix.instance }}/summary.json 2>&1 | tee k6-output.log || {
             EXIT_CODE=$?
             echo "k6_exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
-            echo "k6 test completed with exit code $EXIT_CODE"
-            # Still try to upload reports even if k6 failed
+            echo "=== k6 test completed with exit code $EXIT_CODE ==="
+            echo "=== Last 50 lines of k6 output ==="
+            tail -50 k6-output.log || echo "No output log found"
+            echo "================================="
+            
+            # Check if summary was still created (partial run or threshold failure)
             if [ -f reports/instance-${{ matrix.instance }}/summary.json ]; then
-              echo "Summary file exists, will be uploaded"
+              echo "✓ Summary file exists (test may have completed but failed thresholds)"
+              echo "File size: $(wc -c < reports/instance-${{ matrix.instance }}/summary.json) bytes"
+            else
+              echo "✗ No summary file generated - test may have failed before completion"
+            fi
+            
+            # Exit code 99 is threshold failure (acceptable), 255 is fatal error
+            if [ $EXIT_CODE -eq 99 ]; then
+              echo "Exit code 99: Threshold failure (acceptable, results still valid)"
+            elif [ $EXIT_CODE -eq 255 ]; then
+              echo "Exit code 255: Fatal k6 error - check script syntax and k6 version"
             fi
           }
+          
+          # Verify output files
+          if [ -f reports/instance-${{ matrix.instance }}/summary.json ]; then
+            echo "✓ Summary file verified"
+            echo "File preview (first 10 lines):"
+            head -10 reports/instance-${{ matrix.instance }}/summary.json || echo "Could not read file"
+          else
+            echo "✗ Warning: Summary file not found after k6 execution"
+          fi
 
       - name: Upload instance reports
         if: always()
@@ -272,11 +320,15 @@ jobs:
 
       - name: Display test summary
         if: always()
+        env:
+          MAX_USERS: ${{ github.event.inputs.max_users || '500' }}
         run: |
           if [ -f reports/merged/summary.json ]; then
             echo "## k6 Load Test Summary (Parallel Execution)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**Total Instances:** 4" >> $GITHUB_STEP_SUMMARY
+            echo "**Max Users per Instance:** $MAX_USERS" >> $GITHUB_STEP_SUMMARY
+            echo "**Total Concurrent Users:** $((4 * MAX_USERS))" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             cat reports/merged/summary.json | jq '.metrics | {http_reqs: .http_reqs.values, http_req_duration: .http_req_duration.values, http_req_failed: .http_req_failed.values}' >> $GITHUB_STEP_SUMMARY || cat reports/merged/summary.json >> $GITHUB_STEP_SUMMARY
           fi

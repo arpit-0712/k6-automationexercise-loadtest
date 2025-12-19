@@ -1,20 +1,28 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 
+// Get max users from environment variable, default to 500
+const MAX_USERS = __ENV.MAX_USERS ? parseInt(__ENV.MAX_USERS) : 500;
+
+// Calculate stage targets based on max users
+const WARMUP_TARGET = Math.min(100, Math.floor(MAX_USERS * 0.2)); // 20% or max 100
+const RAMP_TARGET = Math.floor(MAX_USERS * 0.5); // 50% of max
+const PEAK_TARGET = MAX_USERS; // 100% of max
+
 export const options = {
   stages: [
     // warm up
-    { duration: '1m', target: 100 },   // 0 → 100 VUs
-    { duration: '2m', target: 100 },   // stay at 100
+    { duration: '1m', target: WARMUP_TARGET },   // 0 → warmup VUs
+    { duration: '2m', target: WARMUP_TARGET },   // stay at warmup
 
-    // ramp to 1000
-    { duration: '3m', target: 500 },   // 100 → 500
+    // ramp to peak
+    { duration: '3m', target: RAMP_TARGET },   // warmup → ramp
 
     // hold peak load
-    { duration: '5m', target: 700 },  // stay at 1000
+    { duration: '5m', target: PEAK_TARGET },  // stay at peak
 
     // ramp down
-    { duration: '2m', target: 0 },     // 1000 → 0
+    { duration: '2m', target: 0 },     // peak → 0
   ],
   thresholds: {
     http_req_duration: ['p(95)<2000'], // 95% of requests < 2s (more realistic for high load)
