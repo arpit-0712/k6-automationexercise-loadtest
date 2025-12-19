@@ -37,13 +37,33 @@ def generate_html_report(summary_file, output_file):
 
     metrics = data.get('metrics', {})
     
-    # Extract key metrics
+    # Extract key metrics with safe defaults
+    def safe_get(metric_dict, key, default=0):
+        """Safely get value from metric, handling nested structure"""
+        if not metric_dict:
+            return default
+        values = metric_dict.get('values', {})
+        if not values:
+            return default
+        result = values.get(key, default)
+        return result if result is not None else default
+    
     http_req_duration = metrics.get('http_req_duration', {})
     http_req_failed = metrics.get('http_req_failed', {})
     http_reqs = metrics.get('http_reqs', {})
     vus = metrics.get('vus', {})
     data_sent = metrics.get('data_sent', {})
     data_received = metrics.get('data_received', {})
+    
+    # Debug: Print metric structure if empty
+    if not metrics:
+        print(f"Warning: No metrics found in summary file")
+        print(f"Available keys: {list(data.keys())}")
+    elif not http_reqs.get('values', {}).get('count', 0):
+        print(f"Warning: http_reqs count is 0 or missing")
+        print(f"Metrics available: {list(metrics.keys())}")
+        if http_reqs:
+            print(f"http_reqs structure: {http_reqs}")
     
     # Generate HTML
     html = f"""<!DOCTYPE html>
@@ -171,39 +191,39 @@ def generate_html_report(summary_file, output_file):
 
         <h2>Key Metrics</h2>
         <div class="metrics-grid">
-            <div class="metric-card {'success' if http_req_failed.get('values', {}).get('rate', 0) < 0.05 else 'error'}">
+            <div class="metric-card {'success' if safe_get(http_req_failed, 'rate', 0) < 0.05 else 'error'}">
                 <div class="metric-label">HTTP Requests</div>
-                <div class="metric-value">{http_reqs.get('values', {}).get('count', 0):,}</div>
+                <div class="metric-value">{safe_get(http_reqs, 'count', 0):,}</div>
                 <div class="metric-unit">Total Requests</div>
             </div>
             
             <div class="metric-card">
                 <div class="metric-label">Request Duration (p95)</div>
-                <div class="metric-value">{http_req_duration.get('values', {}).get('p95', 0):.0f}</div>
+                <div class="metric-value">{safe_get(http_req_duration, 'p95', 0):.0f}</div>
                 <div class="metric-unit">milliseconds</div>
             </div>
             
-            <div class="metric-card {'success' if http_req_failed.get('values', {}).get('rate', 0) < 0.01 else 'warning' if http_req_failed.get('values', {}).get('rate', 0) < 0.05 else 'error'}">
+            <div class="metric-card {'success' if safe_get(http_req_failed, 'rate', 0) < 0.01 else 'warning' if safe_get(http_req_failed, 'rate', 0) < 0.05 else 'error'}">
                 <div class="metric-label">Failed Requests</div>
-                <div class="metric-value">{(http_req_failed.get('values', {}).get('rate', 0) * 100):.2f}%</div>
-                <div class="metric-unit">{http_req_failed.get('values', {}).get('count', 0):,} failed</div>
+                <div class="metric-value">{(safe_get(http_req_failed, 'rate', 0) * 100):.2f}%</div>
+                <div class="metric-unit">{safe_get(http_req_failed, 'count', 0):,} failed</div>
             </div>
             
             <div class="metric-card">
                 <div class="metric-label">Virtual Users</div>
-                <div class="metric-value">{vus.get('values', {}).get('max', 0):,}</div>
+                <div class="metric-value">{safe_get(vus, 'max', 0):,}</div>
                 <div class="metric-unit">Peak VUs</div>
             </div>
             
             <div class="metric-card">
                 <div class="metric-label">Data Sent</div>
-                <div class="metric-value">{format_bytes(data_sent.get('values', {}).get('count', 0))}</div>
+                <div class="metric-value">{format_bytes(safe_get(data_sent, 'count', 0))}</div>
                 <div class="metric-unit">Total</div>
             </div>
             
             <div class="metric-card">
                 <div class="metric-label">Data Received</div>
-                <div class="metric-value">{format_bytes(data_received.get('values', {}).get('count', 0))}</div>
+                <div class="metric-value">{format_bytes(safe_get(data_received, 'count', 0))}</div>
                 <div class="metric-unit">Total</div>
             </div>
         </div>
@@ -220,42 +240,42 @@ def generate_html_report(summary_file, output_file):
             <tbody>
                 <tr>
                     <td><strong>HTTP Request Duration - Average</strong></td>
-                    <td>{http_req_duration.get('values', {}).get('avg', 0):.2f}</td>
+                    <td>{safe_get(http_req_duration, 'avg', 0):.2f}</td>
                     <td>ms</td>
                 </tr>
                 <tr>
                     <td><strong>HTTP Request Duration - Min</strong></td>
-                    <td>{http_req_duration.get('values', {}).get('min', 0):.2f}</td>
+                    <td>{safe_get(http_req_duration, 'min', 0):.2f}</td>
                     <td>ms</td>
                 </tr>
                 <tr>
                     <td><strong>HTTP Request Duration - Max</strong></td>
-                    <td>{http_req_duration.get('values', {}).get('max', 0):.2f}</td>
+                    <td>{safe_get(http_req_duration, 'max', 0):.2f}</td>
                     <td>ms</td>
                 </tr>
                 <tr>
                     <td><strong>HTTP Request Duration - p90</strong></td>
-                    <td>{http_req_duration.get('values', {}).get('p90', 0):.2f}</td>
+                    <td>{safe_get(http_req_duration, 'p90', 0):.2f}</td>
                     <td>ms</td>
                 </tr>
                 <tr>
                     <td><strong>HTTP Request Duration - p95</strong></td>
-                    <td>{http_req_duration.get('values', {}).get('p95', 0):.2f}</td>
+                    <td>{safe_get(http_req_duration, 'p95', 0):.2f}</td>
                     <td>ms</td>
                 </tr>
                 <tr>
                     <td><strong>HTTP Request Duration - p99</strong></td>
-                    <td>{http_req_duration.get('values', {}).get('p99', 0):.2f}</td>
+                    <td>{safe_get(http_req_duration, 'p99', 0):.2f}</td>
                     <td>ms</td>
                 </tr>
                 <tr>
                     <td><strong>HTTP Requests Rate</strong></td>
-                    <td>{http_reqs.get('values', {}).get('rate', 0):.2f}</td>
+                    <td>{safe_get(http_reqs, 'rate', 0):.2f}</td>
                     <td>req/s</td>
                 </tr>
                 <tr>
                     <td><strong>HTTP Request Failed Rate</strong></td>
-                    <td>{(http_req_failed.get('values', {}).get('rate', 0) * 100):.2f}%</td>
+                    <td>{(safe_get(http_req_failed, 'rate', 0) * 100):.2f}%</td>
                     <td>percentage</td>
                 </tr>
             </tbody>

@@ -178,6 +178,24 @@ jobs:
             fi
           fi
 
+      - name: Debug - Inspect summary files before merge
+        if: always()
+        run: |
+          echo "=== Inspecting summary files ==="
+          for file in $(find reports -name "summary.json" 2>/dev/null); do
+            echo ""
+            echo "File: $file"
+            echo "Size: $(wc -c < "$file") bytes"
+            if [ -f "$file" ]; then
+              echo "First 30 lines:"
+              head -30 "$file" | python3 -m json.tool 2>/dev/null || head -30 "$file"
+              echo ""
+              echo "Metrics in file:"
+              python3 -c "import json; data=json.load(open('$file')); print('  Metrics:', list(data.get('metrics', {}).keys())[:10]); print('  http_reqs count:', data.get('metrics', {}).get('http_reqs', {}).get('values', {}).get('count', 'NOT_FOUND'))" 2>/dev/null || echo "  Could not parse JSON"
+            fi
+            echo "---"
+          done
+
       - name: Merge k6 reports
         continue-on-error: true
         run: |
@@ -243,12 +261,20 @@ jobs:
               try:
                   with open(summary_file, 'r') as f:
                       data = json.load(f)
+                  print(f"Processing {summary_file}...")
+                  print(f"  Metrics found: {list(data.get('metrics', {}).keys())[:5]}...")
               except Exception as e:
                   print(f"Warning: Failed to parse {summary_file}: {e}")
                   continue
               
               # Merge metrics
-              for metric_name, metric_data in data.get('metrics', {}).items():
+              metrics = data.get('metrics', {})
+              if not metrics:
+                  print(f"  Warning: No metrics found in {summary_file}")
+                  print(f"  File structure: {list(data.keys())}")
+                  continue
+              
+              for metric_name, metric_data in metrics.items():
                   if metric_name not in merged_metrics:
                       merged_metrics[metric_name] = {
                           'values': {
@@ -263,27 +289,44 @@ jobs:
                           }
                       }
                   
+                  # k6 summary structure: metric_data has 'values' key
                   values = metric_data.get('values', {})
+                  if not values:
+                      print(f"  Warning: No values found for metric {metric_name}")
+                      continue
+                  
                   merged_values = merged_metrics[metric_name]['values']
                   
-                  # Aggregate counts and rates
-                  merged_values['count'] += values.get('count', 0)
-                  merged_values['rate'] += values.get('rate', 0)
+                  # Aggregate counts and rates (sum across instances)
+                  merged_values['count'] += values.get('count', 0) or 0
+                  merged_values['rate'] += values.get('rate', 0) or 0
                   
-                  # For averages, we'll recalculate later
-                  if 'avg' in values:
-                      merged_values['avg'] = max(merged_values.get('avg', 0), values.get('avg', 0))
+                  # For averages, calculate weighted average or take max
+                  if 'avg' in values and values.get('avg') is not None:
+                      current_avg = merged_values.get('avg', 0) or 0
+                      new_avg = values.get('avg', 0) or 0
+                      # Take the maximum average (conservative approach)
+                      merged_values['avg'] = max(current_avg, new_avg)
                   
                   # Min/Max
-                  if 'min' in values:
-                      merged_values['min'] = min(merged_values.get('min', float('inf')), values.get('min', float('inf')))
-                  if 'max' in values:
-                      merged_values['max'] = max(merged_values.get('max', 0), values.get('max', 0))
+                  if 'min' in values and values.get('min') is not None:
+                      current_min = merged_values.get('min', float('inf'))
+                      if current_min == float('inf'):
+                          current_min = float('inf')
+                      new_min = values.get('min', float('inf'))
+                      merged_values['min'] = min(current_min, new_min) if new_min != float('inf') else current_min
                   
-                  # Percentiles (take max across instances)
+                  if 'max' in values and values.get('max') is not None:
+                      merged_values['max'] = max(merged_values.get('max', 0) or 0, values.get('max', 0) or 0)
+                  
+                  # Percentiles (take max across instances for worst case)
                   for p in ['p90', 'p95', 'p99']:
-                      if p in values:
-                          merged_values[p] = max(merged_values.get(p, 0), values.get(p, 0))
+                      if p in values and values.get(p) is not None:
+                          current_p = merged_values.get(p, 0) or 0
+                          new_p = values.get(p, 0) or 0
+                          merged_values[p] = max(current_p, new_p)
+                  
+                  print(f"  Merged {metric_name}: count={merged_values['count']}, rate={merged_values['rate']:.2f}")
           
           # Create merged summary
           merged_summary = {
@@ -308,7 +351,14 @@ jobs:
           with open('reports/merged/summary.json', 'w') as f:
               json.dump(merged_summary, f, indent=2)
           
-          print("Successfully merged all instance reports")
+          print("\n=== Merge Summary ===")
+          print(f"Total metrics merged: {len(merged_metrics)}")
+          for metric_name, metric_data in merged_metrics.items():
+              values = metric_data.get('values', {})
+              print(f"  {metric_name}: count={values.get('count', 0)}, rate={values.get('rate', 0):.2f}")
+          
+          print("\nSuccessfully merged all instance reports")
+          print(f"Merged summary saved to: reports/merged/summary.json")
           EOF
 
       - name: Generate combined HTML report
