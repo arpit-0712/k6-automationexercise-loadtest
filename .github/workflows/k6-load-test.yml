@@ -19,6 +19,11 @@ jobs:
         with:
           version: v0.51.0   # or 'latest'
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Run k6 load test
         continue-on-error: true
         id: k6_test
@@ -28,12 +33,27 @@ jobs:
             --out json=reports/k6-result.json \
             --summary-export=reports/summary.json || echo "k6_exit_code=$?" >> $GITHUB_OUTPUT
 
+      - name: Generate HTML report
+        if: always()
+        run: |
+          if [ -f reports/summary.json ]; then
+            python3 generate_html_report.py reports/summary.json reports/k6-report.html
+            echo "HTML report generated successfully"
+          else
+            echo "Warning: summary.json not found, skipping HTML report generation"
+          fi
+
       - name: Display test summary
         if: always()
         run: |
           if [ -f reports/summary.json ]; then
             echo "## k6 Test Summary" >> $GITHUB_STEP_SUMMARY
             cat reports/summary.json | jq '.' >> $GITHUB_STEP_SUMMARY || cat reports/summary.json >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -f reports/k6-report.html ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "## 📊 HTML Report" >> $GITHUB_STEP_SUMMARY
+            echo "Download the HTML report from the artifacts to view detailed test results." >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Upload k6 reports
