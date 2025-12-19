@@ -30,7 +30,7 @@ export const options = {
   },
 };
 
-const BASE_URL = 'https://automationexercise.com';
+const BASE_URL = 'https://demoqa.com/';
 
 export default function () {
   // Home page
