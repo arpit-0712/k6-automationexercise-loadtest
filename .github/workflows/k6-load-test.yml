@@ -67,21 +67,25 @@ jobs:
         continue-on-error: true
         id: k6_test
         env:
-          MAX_USERS: ${{ github.event.inputs.max_users || '500' }}
+          TOTAL_MAX_USERS: ${{ github.event.inputs.max_users || '500' }}
         run: |
           mkdir -p reports/instance-${{ matrix.instance }}
           TOTAL_INSTANCES=4
           CURRENT_INSTANCE=${{ matrix.instance }}
           
+          # Calculate users per instance (divide total equally)
+          USERS_PER_INSTANCE=$((TOTAL_MAX_USERS / TOTAL_INSTANCES))
+          
           echo "Running instance $CURRENT_INSTANCE of $TOTAL_INSTANCES"
-          echo "Maximum users (VUs) per instance: $MAX_USERS"
-          echo "Each instance runs independently to generate parallel load"
+          echo "Total max users across all instances: $TOTAL_MAX_USERS"
+          echo "Users per instance (divided equally): $USERS_PER_INSTANCE"
+          echo "Total concurrent users: $TOTAL_MAX_USERS"
           
           # Run k6 without execution segments (simpler and more reliable)
-          # Each instance runs the full test independently, creating parallel load
+          # Each instance runs with its share of the total load
           # The results will be aggregated later
-          echo "Starting k6 test with MAX_USERS=$MAX_USERS..."
-          k6 run automationexecise-loadtest.js \
+          echo "Starting k6 test with MAX_USERS=$USERS_PER_INSTANCE..."
+          MAX_USERS=$USERS_PER_INSTANCE k6 run automationexecise-loadtest.js \
             --out json=reports/instance-${{ matrix.instance }}/k6-result.json \
             --summary-export=reports/instance-${{ matrix.instance }}/summary.json 2>&1 | tee k6-output.log || {
             EXIT_CODE=$?
@@ -321,14 +325,17 @@ jobs:
       - name: Display test summary
         if: always()
         env:
-          MAX_USERS: ${{ github.event.inputs.max_users || '500' }}
+          TOTAL_MAX_USERS: ${{ github.event.inputs.max_users || '500' }}
         run: |
           if [ -f reports/merged/summary.json ]; then
+            TOTAL_INSTANCES=4
+            USERS_PER_INSTANCE=$((TOTAL_MAX_USERS / TOTAL_INSTANCES))
             echo "## k6 Load Test Summary (Parallel Execution)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Total Instances:** 4" >> $GITHUB_STEP_SUMMARY
-            echo "**Max Users per Instance:** $MAX_USERS" >> $GITHUB_STEP_SUMMARY
-            echo "**Total Concurrent Users:** $((4 * MAX_USERS))" >> $GITHUB_STEP_SUMMARY
+            echo "**Total Instances:** $TOTAL_INSTANCES" >> $GITHUB_STEP_SUMMARY
+            echo "**Total Max Users:** $TOTAL_MAX_USERS" >> $GITHUB_STEP_SUMMARY
+            echo "**Users per Instance:** $USERS_PER_INSTANCE (equally divided)" >> $GITHUB_STEP_SUMMARY
+            echo "**Total Concurrent Users:** $TOTAL_MAX_USERS" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             cat reports/merged/summary.json | jq '.metrics | {http_reqs: .http_reqs.values, http_req_duration: .http_req_duration.values, http_req_failed: .http_req_failed.values}' >> $GITHUB_STEP_SUMMARY || cat reports/merged/summary.json >> $GITHUB_STEP_SUMMARY
           fi
