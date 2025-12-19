@@ -1,0 +1,33 @@
+name: k6 Load Test
+
+on:
+  workflow_dispatch:      # run manually from GitHub UI
+  push:
+    branches:
+      - main
+
+jobs:
+  k6-load-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install k6
+        uses: grafana/setup-k6-action@v1
+        with:
+          version: v0.51.0   # or 'latest'
+
+      - name: Run k6 load test
+        run: |
+          mkdir -p reports
+          k6 run automationexecise-loadtest.js \
+            --out json=reports/k6-result.json \
+            --summary-export=reports/summary.json
+
+      - name: Upload k6 reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-reports
+          path: reports/
