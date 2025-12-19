@@ -6,7 +6,7 @@ on:
       max_users:
         description: 'Maximum number of virtual users (VUs) to simulate'
         required: false
-        default: '500'
+        default: '250'
         type: choice
         options:
           - '100'
@@ -375,7 +375,7 @@ jobs:
       - name: Display test summary
         if: always()
         env:
-          TOTAL_MAX_USERS: ${{ github.event.inputs.max_users || '500' }}
+          TOTAL_MAX_USERS: ${{ github.event.inputs.max_users || '250' }}
         run: |
           if [ -f reports/merged/summary.json ]; then
             TOTAL_INSTANCES=4
