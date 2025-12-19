@@ -2,63 +2,203 @@ name: k6 Load Test
 
 on:
   workflow_dispatch:      # run manually from GitHub UI
+    inputs:
+      parallel_instances:
+        description: 'Number of parallel instances to run'
+        required: false
+        default: '4'
+        type: choice
+        options:
+          - '2'
+          - '4'
+          - '8'
   push:
     branches:
       - main
 
 jobs:
-  k6-load-test:
+  k6-load-test-parallel:
     runs-on: ubuntu-latest
-
+    strategy:
+      fail-fast: false
+      matrix:
+        # Number of parallel instances - can be adjusted
+        instance: [1, 2, 3, 4]  # Run 4 instances in parallel by default
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install k6
         uses: grafana/setup-k6-action@v1
+
+      - name: Run k6 load test (Instance ${{ matrix.instance }})
+        continue-on-error: true
+        id: k6_test
+        run: |
+          mkdir -p reports/instance-${{ matrix.instance }}
+          # Calculate execution segment for this instance (4 instances total)
+          TOTAL_INSTANCES=4
+          CURRENT_INSTANCE=${{ matrix.instance }}
+          SEGMENT_START=$(( (CURRENT_INSTANCE - 1) * 100 / TOTAL_INSTANCES ))
+          SEGMENT_END=$(( CURRENT_INSTANCE * 100 / TOTAL_INSTANCES ))
+          
+          echo "Running instance $CURRENT_INSTANCE of $TOTAL_INSTANCES"
+          echo "Execution segment: $SEGMENT_START%-$SEGMENT_END%"
+          
+          k6 run automationexecise-loadtest.js \
+            --execution-segment "$SEGMENT_START%-$SEGMENT_END%" \
+            --execution-segment-sequence "$CURRENT_INSTANCE/$TOTAL_INSTANCES" \
+            --out json=reports/instance-${{ matrix.instance }}/k6-result.json \
+            --summary-export=reports/instance-${{ matrix.instance }}/summary.json || echo "k6_exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Upload instance reports
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          version: v0.51.0   # or 'latest'
+          name: k6-reports-instance-${{ matrix.instance }}
+          path: reports/instance-${{ matrix.instance }}/
+          retention-days: 7
+
+  merge-reports:
+    needs: k6-load-test-parallel
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Run k6 load test
-        continue-on-error: true
-        id: k6_test
-        run: |
-          mkdir -p reports
-          k6 run automationexecise-loadtest.js \
-            --out json=reports/k6-result.json \
-            --summary-export=reports/summary.json || echo "k6_exit_code=$?" >> $GITHUB_OUTPUT
+      - name: Download all instance reports
+        uses: actions/download-artifact@v4
+        with:
+          path: reports/
 
-      - name: Generate HTML report
+      - name: Merge k6 reports
+        run: |
+          mkdir -p reports/merged
+          python3 << 'EOF'
+          import json
+          import os
+          import sys
+          import glob
+          
+          # Find all summary.json files
+          summary_files = glob.glob('reports/k6-reports-instance-*/summary.json')
+          
+          if not summary_files:
+              print("No summary files found")
+              sys.exit(1)
+          
+          print(f"Found {len(summary_files)} instance reports to merge")
+          
+          # Initialize merged data structure
+          merged_metrics = {}
+          merged_state = {}
+          merged_root_group = {}
+          
+          # Aggregate metrics from all instances
+          for summary_file in summary_files:
+              with open(summary_file, 'r') as f:
+                  data = json.load(f)
+              
+              # Merge metrics
+              for metric_name, metric_data in data.get('metrics', {}).items():
+                  if metric_name not in merged_metrics:
+                      merged_metrics[metric_name] = {
+                          'values': {
+                              'count': 0,
+                              'rate': 0,
+                              'avg': 0,
+                              'min': float('inf'),
+                              'max': 0,
+                              'p90': 0,
+                              'p95': 0,
+                              'p99': 0
+                          }
+                      }
+                  
+                  values = metric_data.get('values', {})
+                  merged_values = merged_metrics[metric_name]['values']
+                  
+                  # Aggregate counts and rates
+                  merged_values['count'] += values.get('count', 0)
+                  merged_values['rate'] += values.get('rate', 0)
+                  
+                  # For averages, we'll recalculate later
+                  if 'avg' in values:
+                      merged_values['avg'] = max(merged_values.get('avg', 0), values.get('avg', 0))
+                  
+                  # Min/Max
+                  if 'min' in values:
+                      merged_values['min'] = min(merged_values.get('min', float('inf')), values.get('min', float('inf')))
+                  if 'max' in values:
+                      merged_values['max'] = max(merged_values.get('max', 0), values.get('max', 0))
+                  
+                  # Percentiles (take max across instances)
+                  for p in ['p90', 'p95', 'p99']:
+                      if p in values:
+                          merged_values[p] = max(merged_values.get(p, 0), values.get(p, 0))
+          
+          # Create merged summary
+          merged_summary = {
+              'state': {
+                  'testRunDurationMs': 0
+              },
+              'metrics': merged_metrics,
+              'root_group': {
+                  'duration': 0,
+                  'thresholds': {}
+              }
+          }
+          
+          # Calculate total duration from first instance
+          if summary_files:
+              with open(summary_files[0], 'r') as f:
+                  first_data = json.load(f)
+                  merged_summary['state']['testRunDurationMs'] = first_data.get('state', {}).get('testRunDurationMs', 0)
+                  merged_summary['root_group']['duration'] = first_data.get('root_group', {}).get('duration', 0)
+          
+          # Save merged summary
+          with open('reports/merged/summary.json', 'w') as f:
+              json.dump(merged_summary, f, indent=2)
+          
+          print("Successfully merged all instance reports")
+          EOF
+
+      - name: Generate combined HTML report
         if: always()
         run: |
-          if [ -f reports/summary.json ]; then
-            python3 generate_html_report.py reports/summary.json reports/k6-report.html
-            echo "HTML report generated successfully"
+          if [ -f reports/merged/summary.json ]; then
+            python3 generate_html_report.py reports/merged/summary.json reports/merged/k6-report.html
+            echo "Combined HTML report generated successfully"
           else
-            echo "Warning: summary.json not found, skipping HTML report generation"
+            echo "Warning: merged summary.json not found"
           fi
 
       - name: Display test summary
         if: always()
         run: |
-          if [ -f reports/summary.json ]; then
-            echo "## k6 Test Summary" >> $GITHUB_STEP_SUMMARY
-            cat reports/summary.json | jq '.' >> $GITHUB_STEP_SUMMARY || cat reports/summary.json >> $GITHUB_STEP_SUMMARY
-          fi
-          if [ -f reports/k6-report.html ]; then
+          if [ -f reports/merged/summary.json ]; then
+            echo "## k6 Load Test Summary (Parallel Execution)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "## 📊 HTML Report" >> $GITHUB_STEP_SUMMARY
-            echo "Download the HTML report from the artifacts to view detailed test results." >> $GITHUB_STEP_SUMMARY
+            echo "**Total Instances:** 4" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            cat reports/merged/summary.json | jq '.metrics | {http_reqs: .http_reqs.values, http_req_duration: .http_req_duration.values, http_req_failed: .http_req_failed.values}' >> $GITHUB_STEP_SUMMARY || cat reports/merged/summary.json >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -f reports/merged/k6-report.html ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "## 📊 Combined HTML Report" >> $GITHUB_STEP_SUMMARY
+            echo "Download the merged HTML report from the artifacts to view detailed test results from all parallel instances." >> $GITHUB_STEP_SUMMARY
           fi
 
-      - name: Upload k6 reports
+      - name: Upload merged reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: k6-reports
-          path: reports/
+          name: k6-reports-merged
+          path: reports/merged/
+          retention-days: 30
