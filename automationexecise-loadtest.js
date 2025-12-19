@@ -2,7 +2,7 @@ import http from 'k6/http';
 import { check, sleep } from 'k6';
 
 // Get max users from environment variable, default to 500
-const MAX_USERS = __ENV.MAX_USERS ? parseInt(__ENV.MAX_USERS) : 500;
+const MAX_USERS = __ENV.MAX_USERS ? parseInt(__ENV.MAX_USERS) : 100;
 
 // Calculate stage targets based on max users
 const WARMUP_TARGET = Math.min(100, Math.floor(MAX_USERS * 0.2)); // 20% or max 100
@@ -30,7 +30,7 @@ export const options = {
   },
 };
 
-const BASE_URL = 'https://demoqa.com/';
+const BASE_URL = 'https://automationexercise.com';
 
 export default function () {
   // Home page
