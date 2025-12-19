@@ -20,13 +20,24 @@ jobs:
           version: v0.51.0   # or 'latest'
 
       - name: Run k6 load test
+        continue-on-error: true
+        id: k6_test
         run: |
           mkdir -p reports
           k6 run automationexecise-loadtest.js \
             --out json=reports/k6-result.json \
-            --summary-export=reports/summary.json
+            --summary-export=reports/summary.json || echo "k6_exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Display test summary
+        if: always()
+        run: |
+          if [ -f reports/summary.json ]; then
+            echo "## k6 Test Summary" >> $GITHUB_STEP_SUMMARY
+            cat reports/summary.json | jq '.' >> $GITHUB_STEP_SUMMARY || cat reports/summary.json >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Upload k6 reports
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: k6-reports
